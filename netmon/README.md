@@ -78,7 +78,7 @@ The script displays network traffic in a table format with the following columns
 - **Update Interval**: 2 seconds for data refresh
 - **Poll Interval**: 0.1 seconds for keyboard input
 - **Maximum Rows**: 20 processes displayed at once
-- **Minimum Traffic**: Only shows processes with >10KB total traffic
+- **Minimum Traffic**: Shows all processes with any network activity
 - **Cleanup**: Automatically removes temporary files on exit
 
 ## Troubleshooting
@@ -87,7 +87,7 @@ The script displays network traffic in a table format with the following columns
 
 - Ensure you have network activity (try browsing the web)
 - Check that `nettop` command is available and working
-- The script only shows processes with significant network activity (>10KB)
+- The script shows all processes with any network activity
 
 ### Permission issues
 
@@ -101,13 +101,13 @@ The script displays network traffic in a table format with the following columns
 
 ## File Structure
 
-The script creates temporary files in `/tmp/` during operation:
+The script creates a temporary directory in `/tmp/netmon.XXXXXX/` during operation containing:
 
-- `nettop_prev_*` - Previous readings for rate calculation
-- `nettop_history_*` - Process history and cumulative statistics
-- `nettop_curr_*` - Current nettop output processing
+- `prev` - Previous readings for rate calculation
+- `history` - Process history and cumulative statistics  
+- `curr` - Current nettop output processing
 
-All temporary files are automatically cleaned up when the script exits.
+All temporary files and the directory are automatically cleaned up when the script exits.
 
 ## Author
 

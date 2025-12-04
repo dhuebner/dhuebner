@@ -5,8 +5,13 @@
 # Use < and > to change sort column (refreshes immediately)
 # Use d to toggle showing dead processes
 
-PREV_FILE="/tmp/nettop_prev_$$"
-HISTORY_FILE="/tmp/nettop_history_$$"
+# Create a temporary directory for all files
+TMP_DIR=$(mktemp -d /tmp/netmon.XXXXXX) || exit 1
+
+PREV_FILE="$TMP_DIR/prev"
+HISTORY_FILE="$TMP_DIR/history"
+CURR_FILE="$TMP_DIR/curr"
+
 INTERVAL=2
 POLL_INTERVAL=0.1
 MAX_ROWS=20
@@ -32,7 +37,7 @@ DIM='\033[2m'
 NC='\033[0m'
 
 cleanup() {
-  rm -f "$PREV_FILE" "/tmp/nettop_curr_$$" "/tmp/nettop_output_$$" "$HISTORY_FILE" "/tmp/nettop_totals_$$" 2>/dev/null
+  rm -rf "$TMP_DIR" 2>/dev/null
   echo -ne "${SHOW_CURSOR}"
   stty sane 2>/dev/null
   exit 0
@@ -71,16 +76,17 @@ refresh_display() {
   echo -e "--------------------------------------------------------------------------------------------${CLEAR_LINE}"
 
   # Get current active processes from nettop
+  # We capture the output to a file first to avoid pipe buffering issues and for debugging if needed
   nettop -P -L 1 2>/dev/null | tail -n +2 | \
     grep -vE "127\.0\.0\.1|::1|localhost|192\.168\.|^10\.|172\.(1[6-9]|2[0-9]|3[0-1])\." | \
-    awk -F',' '$5+$6 > 10000 {print $2 "|" $5 "|" $6}' > "/tmp/nettop_curr_$$"
+    awk -F',' '$5+$6 > 0 {print $2 "|" $5 "|" $6}' > "$CURR_FILE"
 
   # Process data and generate sorted output with totals - all in one awk call
   awk -F'|' -v prev_file="$PREV_FILE" -v history_file="$HISTORY_FILE" -v interval="$INTERVAL" \
       -v sort_col="$SORT_COL" -v show_dead="$SHOW_DEAD" -v max_rows="$MAX_ROWS" \
       -v dim="${DIM}" -v nc="${NC}" -v yellow="${YELLOW}" -v clear_line="${CLEAR_LINE}" '
     BEGIN {
-      # Load previous readings
+      # Load previous readings (Key: Full Process.PID)
       while ((getline line < prev_file) > 0) {
         n = split(line, a, "|")
         prev_in[a[1]] = a[2]
@@ -88,7 +94,7 @@ refresh_display() {
       }
       close(prev_file)
 
-      # Load historical values
+      # Load historical values (Key: Process Name)
       while ((getline line < history_file) > 0) {
         n = split(line, a, "|")
         # Skip empty or invalid entries
@@ -124,32 +130,46 @@ refresh_display() {
       # Skip empty or invalid process names
       if (proc_name == "" || proc_name ~ /^[[:space:]]*$/) next
 
-      # Initialize if needed
+      # Initialize history if needed
       if (hist_in[proc_name] == "") hist_in[proc_name] = 0
       if (hist_out[proc_name] == "") hist_out[proc_name] = 0
 
-      # Add delta to historical total
-      if (prev_in[proc_name] > 0 && in_bytes >= prev_in[proc_name]) {
-        hist_in[proc_name] += (in_bytes - prev_in[proc_name])
-        hist_out[proc_name] += (out_bytes - prev_out[proc_name])
-      } else if (prev_in[proc_name] == "" || prev_in[proc_name] == 0) {
-        hist_in[proc_name] += in_bytes
-        hist_out[proc_name] += out_bytes
+      # Calculate delta for THIS specific PID instance
+      delta_in = 0
+      delta_out = 0
+
+      # Calculate delta for IN bytes
+      if ((full_name in prev_in) && in_bytes >= prev_in[full_name]) {
+        delta_in = in_bytes - prev_in[full_name]
+      } else {
+        delta_in = 0
       }
+
+      # Calculate delta for OUT bytes
+      if ((full_name in prev_out) && out_bytes >= prev_out[full_name]) {
+        delta_out = out_bytes - prev_out[full_name]
+      } else {
+        delta_out = 0
+      }
+
+      # Update history with delta
+      hist_in[proc_name] += delta_in
+      hist_out[proc_name] += delta_out
 
       hist_status[proc_name] = "ALIVE"
       hist_pid[proc_name] = pid
 
-      # Calculate rates
-      in_rate = (prev_in[proc_name] > 0) ? (in_bytes - prev_in[proc_name])/interval/1024 : 0
-      out_rate = (prev_out[proc_name] > 0) ? (out_bytes - prev_out[proc_name])/interval/1024 : 0
-      if (in_rate < 0) in_rate = 0
-      if (out_rate < 0) out_rate = 0
+      # Calculate rate for this PID
+      pid_in_rate = delta_in / interval / 1024
+      pid_out_rate = delta_out / interval / 1024
 
-      current_in[proc_name] = in_bytes
-      current_out[proc_name] = out_bytes
-      current_in_rate[proc_name] = in_rate
-      current_out_rate[proc_name] = out_rate
+      # Aggregate rates for the process name
+      current_in_rate[proc_name] += pid_in_rate
+      current_out_rate[proc_name] += pid_out_rate
+
+      # Store current values for next run (Key: Full Process.PID)
+      current_in_save[full_name] = in_bytes
+      current_out_save[full_name] = out_bytes
     }
     END {
       # Write updated history
@@ -158,9 +178,9 @@ refresh_display() {
       }
       close(history_file)
 
-      # Write current values for rate calculation
-      for (proc in current_in) {
-        print proc "|" current_in[proc] "|" current_out[proc] > prev_file
+      # Write current values for next comparison (Key: Full Process.PID)
+      for (full in current_in_save) {
+        print full "|" current_in_save[full] "|" current_out_save[full] > prev_file
       }
       close(prev_file)
 
@@ -263,7 +283,7 @@ refresh_display() {
 
       printf "%s%-30s %10.2f MB %10.2f MB %8.1f KB/s %8.1f KB/s%s%s\n", yellow, "TOTAL (" status_str ")", total_in, total_out, total_in_rate, total_out_rate, nc, clear_line
     }
-  ' "/tmp/nettop_curr_$$"
+  ' "$CURR_FILE"
 }
 
 # Initialize files
