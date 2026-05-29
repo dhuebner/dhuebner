@@ -71,13 +71,13 @@ refresh_display() {
   local dead_status="showing"
   [[ $SHOW_DEAD -eq 0 ]] && dead_status="hidden"
 
-  echo -e "=== Internet Traffic $(date +%H:%M:%S) === (< > sort, d toggle dead [$dead_status], Ctrl+C exit)${CLEAR_LINE}"
+  echo -e "=== Internet Traffic $(date +%H:%M:%S) === (←/→/,/. sort, d toggle dead [$dead_status], Ctrl+C exit)${CLEAR_LINE}"
   get_header
   echo -e "--------------------------------------------------------------------------------------------${CLEAR_LINE}"
 
   # Get current active processes from nettop
   # We capture the output to a file first to avoid pipe buffering issues and for debugging if needed
-  nettop -P -L 1 2>/dev/null | tail -n +2 | \
+  nettop -P -L 1 -n 2>/dev/null | tail -n +2 | \
     grep -vE "127\.0\.0\.1|::1|localhost|192\.168\.|^10\.|172\.(1[6-9]|2[0-9]|3[0-1])\." | \
     awk -F',' '$5+$6 > 0 {print $2 "|" $5 "|" $6}' > "$CURR_FILE"
 
@@ -290,8 +290,8 @@ refresh_display() {
 echo "" > "$PREV_FILE"
 echo "" > "$HISTORY_FILE"
 
-# Set terminal to non-blocking input and hide cursor
-stty -echo -icanon time 0 min 0 2>/dev/null
+# Hide cursor, suppress echo
+stty -echo 2>/dev/null
 echo -ne "${HIDE_CURSOR}"
 echo -ne "${CLEAR_SCREEN}"
 
@@ -301,22 +301,44 @@ refresh_display
 LAST_REFRESH=$SECONDS
 
 while true; do
-  key=$(dd bs=1 count=1 2>/dev/null)
+  key=""
+  read -k 1 -t $POLL_INTERVAL key 2>/dev/null
 
   NEEDS_REFRESH=0
 
+  # Handle escape sequences (arrow keys)
+  if [[ "$key" == $'\e' ]]; then
+    read -k 1 -t 0.1 key2 2>/dev/null
+    if [[ "$key2" == "[" ]]; then
+      read -k 1 -t 0.1 key3 2>/dev/null
+      case "$key3" in
+        D) # Left arrow
+          ((SORT_COL--))
+          [[ $SORT_COL -lt 1 ]] && SORT_COL=5
+          NEEDS_REFRESH=1
+          ;;
+        C) # Right arrow
+          ((SORT_COL++))
+          [[ $SORT_COL -gt 5 ]] && SORT_COL=1
+          NEEDS_REFRESH=1
+          ;;
+      esac
+    fi
+    key=""
+  fi
+
   case "$key" in
-    "<"|",")
+    [,\<])
       ((SORT_COL--))
       [[ $SORT_COL -lt 1 ]] && SORT_COL=5
       NEEDS_REFRESH=1
       ;;
-    ">"|".")
+    [.\>])
       ((SORT_COL++))
       [[ $SORT_COL -gt 5 ]] && SORT_COL=1
       NEEDS_REFRESH=1
       ;;
-    "d"|"D")
+    [dD])
       SHOW_DEAD=$((1 - SHOW_DEAD))
       NEEDS_REFRESH=1
       ;;
@@ -331,6 +353,4 @@ while true; do
     refresh_display
     LAST_REFRESH=$SECONDS
   fi
-
-  sleep $POLL_INTERVAL
 done
